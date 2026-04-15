@@ -53,7 +53,7 @@ target_colors = set()
 # -------- HELPER FUNCTIONS --------
 def get_pending_orders():
     try:
-        response = requests.get(f"{API_BASE_URL}/get_queue", timeout=1)
+        response = requests.get(f"{API_BASE_URL}/get_queue", timeout=3)
         return response.json() 
     except:
         return []
@@ -102,7 +102,7 @@ while True:
 
     # Check API every 1.5 seconds
     current_time = time.time()
-    if current_time - last_api_check > 1.5:
+    if current_time - last_api_check > 0.5:
         pending_orders = get_pending_orders()
         target_colors = {order['color'] for order in pending_orders}
         last_api_check = current_time

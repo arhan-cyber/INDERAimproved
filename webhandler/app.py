@@ -64,4 +64,4 @@ def complete_order():
 if __name__ == '__main__':
     init_db()
     # Run the server on port 5000, accessible to your local network
-    app.run(host='0.0.0.0', port=5000, debug=True)  
+    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)  
