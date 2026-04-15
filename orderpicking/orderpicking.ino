@@ -15,7 +15,7 @@ Servo baseServo, shoulderServo, elbowServo,
 
 // -------- POSITIONS --------
 int curpos[6]    = {90, 90, 90, 90, 90, 180};
-int pickupPos[6] = {80, 85, 175, 90, 90, 110};
+int pickupPos[6] = {80, 85, 175, 90, 90, 100};
 int dropPos[6]   = {0, 55, 180, 130, 90, 180}; // Single, universal drop location
 
 // -------- STATE --------
