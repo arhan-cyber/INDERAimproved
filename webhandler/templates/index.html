@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Robot Order Queue</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background-color: #f4f4f9; padding: 20px; }
+        .btn { padding: 15px 30px; font-size: 18px; margin: 10px; cursor: pointer; border: none; border-radius: 5px; color: white; }
+        .btn-red { background-color: #e74c3c; }
+        .btn-blue { background-color: #3498db; }
+        .btn-green { background-color: #2ecc71; }
+        #queue-container { margin-top: 30px; background: white; padding: 20px; border-radius: 8px; display: inline-block; min-width: 300px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        ul { list-style-type: none; padding: 0; }
+        li { padding: 10px; border-bottom: 1px solid #ddd; font-size: 18px; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+
+    <h1>Robot Arm Control Panel</h1>
+    <p>Click a color to add it to the robotic picking queue.</p>
+
+    <button class="btn btn-red" onclick="addOrder('red')">Order RED</button>
+    <button class="btn btn-blue" onclick="addOrder('blue')">Order BLUE</button>
+    <button class="btn btn-green" onclick="addOrder('green')">Order GREEN</button>
+
+    <div id="queue-container">
+        <h2>Live Queue (Pending)</h2>
+        <ul id="queue-list">Loading queue...</ul>
+    </div>
+
+    <script>
+        // Send order to the Python backend
+        function addOrder(color) {
+            fetch('/api/add_order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ color: color })
+            }).then(() => fetchQueue());
+        }
+
+        // Fetch the pending queue and update the UI
+        function fetchQueue() {
+            fetch('/api/get_queue')
+                .then(response => response.json())
+                .then(data => {
+                    const list = document.getElementById('queue-list');
+                    list.innerHTML = '';
+                    if (data.length === 0) {
+                        list.innerHTML = '<li>Queue is empty</li>';
+                        return;
+                    }
+                    data.forEach(order => {
+                        let li = document.createElement('li');
+                        li.innerText = `#${order.id} - ${order.color}`;
+                        li.style.color = order.color === 'red' ? '#e74c3c' : (order.color === 'blue' ? '#3498db' : '#2ecc71');
+                        list.appendChild(li);
+                    });
+                });
+        }
+
+        // Refresh the queue every 2 seconds
+        setInterval(fetchQueue, 2000);
+        fetchQueue();
+    </script>
+</body>
+</html>
