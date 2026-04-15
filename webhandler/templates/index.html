@@ -1,65 +1,173 @@
 <!DOCTYPE html>
+
 <html>
 <head>
     <title>Robot Order Queue</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; background-color: #f4f4f9; padding: 20px; }
-        .btn { padding: 15px 30px; font-size: 18px; margin: 10px; cursor: pointer; border: none; border-radius: 5px; color: white; }
-        .btn-red { background-color: #e74c3c; }
-        .btn-blue { background-color: #3498db; }
-        .btn-green { background-color: #2ecc71; }
-        #queue-container { margin-top: 30px; background: white; padding: 20px; border-radius: 8px; display: inline-block; min-width: 300px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-        ul { list-style-type: none; padding: 0; }
-        li { padding: 10px; border-bottom: 1px solid #ddd; font-size: 18px; text-transform: uppercase; }
-    </style>
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            background: linear-gradient(135deg, #eef2f7, #dfe9f3);
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+```
+    h1 {
+        margin-bottom: 5px;
+        color: #2c3e50;
+    }
+
+    p {
+        margin-bottom: 30px;
+        color: #555;
+    }
+
+    .button-group {
+        display: flex;
+        gap: 15px;
+        margin-bottom: 30px;
+    }
+
+    .btn {
+        padding: 14px 28px;
+        font-size: 16px;
+        border: none;
+        border-radius: 10px;
+        color: white;
+        cursor: pointer;
+        transition: all 0.25s ease;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+    }
+
+    .btn:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.2);
+    }
+
+    .btn:active {
+        transform: scale(0.97);
+    }
+
+    .btn-red { background: linear-gradient(135deg, #ff6b6b, #e74c3c); }
+    .btn-blue { background: linear-gradient(135deg, #5dade2, #3498db); }
+    .btn-green { background: linear-gradient(135deg, #58d68d, #2ecc71); }
+
+    #queue-container {
+        background: white;
+        padding: 25px 30px;
+        border-radius: 15px;
+        min-width: 320px;
+        max-width: 400px;
+        width: 100%;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+    }
+
+    #queue-container h2 {
+        margin-top: 0;
+        text-align: center;
+        color: #2c3e50;
+    }
+
+    ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+
+    li {
+        padding: 12px;
+        margin: 8px 0;
+        border-radius: 8px;
+        background: #f8f9fb;
+        font-size: 16px;
+        font-weight: 500;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        animation: fadeIn 0.3s ease;
+    }
+
+    li span {
+        font-weight: bold;
+    }
+
+    .empty {
+        text-align: center;
+        color: #999;
+        font-style: italic;
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(5px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+</style>
+```
+
 </head>
 <body>
 
-    <h1>Robot Arm Control Panel</h1>
-    <p>Click a color to add it to the robotic picking queue.</p>
+```
+<h1>🤖 Robot Arm Control Panel</h1>
+<p>Select a color to add it to the picking queue</p>
 
-    <button class="btn btn-red" onclick="addOrder('red')">Order RED</button>
-    <button class="btn btn-blue" onclick="addOrder('blue')">Order BLUE</button>
-    <button class="btn btn-green" onclick="addOrder('green')">Order GREEN</button>
+<div class="button-group">
+    <button class="btn btn-red" onclick="addOrder('red')">🔴 Red</button>
+    <button class="btn btn-blue" onclick="addOrder('blue')">🔵 Blue</button>
+    <button class="btn btn-green" onclick="addOrder('green')">🟢 Green</button>
+</div>
 
-    <div id="queue-container">
-        <h2>Live Queue (Pending)</h2>
-        <ul id="queue-list">Loading queue...</ul>
-    </div>
+<div id="queue-container">
+    <h2>📋 Live Queue</h2>
+    <ul id="queue-list">Loading...</ul>
+</div>
 
-    <script>
-        // Send order to the Python backend
-        function addOrder(color) {
-            fetch('/api/add_order', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ color: color })
-            }).then(() => fetchQueue());
-        }
+<script>
+    function addOrder(color) {
+        fetch('/api/add_order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ color: color })
+        }).then(() => fetchQueue());
+    }
 
-        // Fetch the pending queue and update the UI
-        function fetchQueue() {
-            fetch('/api/get_queue')
-                .then(response => response.json())
-                .then(data => {
-                    const list = document.getElementById('queue-list');
-                    list.innerHTML = '';
-                    if (data.length === 0) {
-                        list.innerHTML = '<li>Queue is empty</li>';
-                        return;
-                    }
-                    data.forEach(order => {
-                        let li = document.createElement('li');
-                        li.innerText = `#${order.id} - ${order.color}`;
-                        li.style.color = order.color === 'red' ? '#e74c3c' : (order.color === 'blue' ? '#3498db' : '#2ecc71');
-                        list.appendChild(li);
-                    });
+    function fetchQueue() {
+        fetch('/api/get_queue')
+            .then(response => response.json())
+            .then(data => {
+                const list = document.getElementById('queue-list');
+                list.innerHTML = '';
+
+                if (data.length === 0) {
+                    list.innerHTML = '<li class="empty">Queue is empty</li>';
+                    return;
+                }
+
+                data.forEach(order => {
+                    let li = document.createElement('li');
+
+                    let color = order.color;
+                    let colorHex =
+                        color === 'red' ? '#e74c3c' :
+                        color === 'blue' ? '#3498db' : '#2ecc71';
+
+                    li.innerHTML = `
+                        <span>#${order.id}</span>
+                        <span style="color:${colorHex}">${color.toUpperCase()}</span>
+                    `;
+
+                    list.appendChild(li);
                 });
-        }
+            });
+    }
 
-        // Refresh the queue every 2 seconds
-        setInterval(fetchQueue, 2000);
-        fetchQueue();
-    </script>
+    setInterval(fetchQueue, 2000);
+    fetchQueue();
+</script>
+```
+
 </body>
 </html>
