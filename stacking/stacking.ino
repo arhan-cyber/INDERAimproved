@@ -20,10 +20,10 @@ Servo baseServo, shoulderServo, elbowServo,
       wristPitch, wristRoll, gripper;
 
 // -------- POSITIONS --------
-int curpos[6]   = {90, 90, 90, 90, 90, 180};
-int pickupPos[6] = {80, 85, 175, 90, 90, 100};
-int dropPos[6]   = {0, 55, 180, 130, 90, 180};
-int dropPos2[6] = {0, 48, 165, 130, 90, 180};  // layer 2 (on top)
+int curpos[6]   = {90, 65, 90, 90, 90, 180};
+int pickupPos[6] = {80, 65, 175, 90, 90, 100};
+int dropPos[6]   = {0, 35, 180, 130, 90, 180};
+int dropPos2[6] = {0, 23, 165, 130, 90, 180};  // layer 2 (on top)
 
 // -------- SETTINGS --------
 const int stepDelay = 15;
@@ -170,7 +170,7 @@ void performArmAction() {
   // ---- RETURN TO START (SAFE SEQUENCE) ----
 
   // 1. FIRST: Lift arm vertically (shoulder + elbow)
-  moveServo(shoulderServo, 1, 90);
+  moveServo(shoulderServo, 1, 5);
   moveServo(elbowServo,    2, 90);
 
   delay(300);
