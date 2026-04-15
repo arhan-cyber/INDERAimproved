@@ -44,6 +44,8 @@ busy = False
 last_detected = None
 stable_count = 0
 current_target_order = None 
+last_untracked_color = None
+untracked_logged = False
 
 # ---- STATE FOR PERFORMANCE ----
 last_api_check = 0
@@ -92,6 +94,17 @@ def reset_stack_levels():
     }
     arduino.write("RESET\n".encode())
     print("Stack levels reset")
+def add_to_inventory(color):
+    try:
+        requests.post(
+            f"{API_BASE_URL}/add_inventory",
+            json={"color": color},
+            timeout=1
+        )
+        print(f"Inventory updated: {color} block added.")
+    except Exception as e:
+        print(f"Failed to update inventory: {e}")
+
 
 # -------- MAIN LOOP --------
 while True:
@@ -152,25 +165,38 @@ while True:
         stable_count += 1
     else:
         stable_count = 0
+    if detected_color is None:
+        untracked_logged = False
+        last_untracked_color = None
     last_detected = detected_color if in_pick_zone else None
 
     # Decision Making
     if detected_color is not None and stable_count >= REQUIRED_STABLE and not busy:
+
         if detected_color in target_colors:
+            # -------- EXISTING PICK LOGIC --------
             for order in pending_orders:
                 if order['color'] == detected_color:
                     current_target_order = order
                     break
             
-            # Get the stacking level for this color
             stack_level = get_next_stack_level(detected_color)
             
             print(f"Target {detected_color} recognized! Stacking at Level {stack_level}")
             send_command("PICK", stack_level)
-            
-            last_api_check = 0 
-            
-        stable_count = 0 
+
+            last_api_check = 0
+            untracked_logged = False  # reset
+
+        else:
+            # -------- NEW INVENTORY LOGIC --------
+            if detected_color != last_untracked_color or not untracked_logged:
+                print(f"Untracked {detected_color} detected → logging to inventory")
+                add_to_inventory(detected_color)
+                untracked_logged = True
+                last_untracked_color = detected_color
+
+        stable_count = 0
 
     # Serial Feedback & Database Update
     if arduino.in_waiting:
