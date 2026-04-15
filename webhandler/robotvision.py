@@ -11,8 +11,15 @@ TOLERANCE = 30
 MIN_AREA = 1500 
 REQUIRED_STABLE = 5 
 
+# -------- STACKING CONFIGURATION --------
+# Track what level each color should go to
+color_stack_level = {
+    "red": 1,
+    "blue": 1,
+    "green": 1
+}
+
 # -------- SERIAL SETUP & HANDSHAKE --------
-# FIX 3: Make sure timeout is very low (e.g., 0.1) so it doesn't block
 arduino = serial.Serial('COM6', 9600, timeout=0.1)  
 print("Waiting for Arduino to initialize...")
 while True:
@@ -38,15 +45,15 @@ last_detected = None
 stable_count = 0
 current_target_order = None 
 
-# ---- NEW STATE FOR PERFORMANCE ----
-last_api_check = 0         # Timer for our database checks
-pending_orders = []        # Store orders here so we don't fetch every frame
-target_colors = set()      # Store target colors here
+# ---- STATE FOR PERFORMANCE ----
+last_api_check = 0
+pending_orders = []
+target_colors = set()
 
 # -------- HELPER FUNCTIONS --------
 def get_pending_orders():
     try:
-        response = requests.get(f"{API_BASE_URL}/get_queue", timeout=1) # Added timeout
+        response = requests.get(f"{API_BASE_URL}/get_queue", timeout=1)
         return response.json() 
     except:
         return []
@@ -58,21 +65,42 @@ def complete_order(order_id):
     except Exception as e:
         print(f"Failed to update database: {e}")
 
-def send_command(cmd):
+def send_command(cmd, level=1):
     global busy
-    print(f"Sending to Arduino: {cmd}")
-    arduino.write((cmd + "\n").encode())
+    # Send command with stacking level
+    full_cmd = f"{cmd}:{level}"
+    print(f"Sending to Arduino: {full_cmd}")
+    arduino.write((full_cmd + "\n").encode())
     busy = True
+
+def get_next_stack_level(color):
+    """Determine which level this color should be stacked at"""
+    level = color_stack_level[color]
+    
+    # Toggle between level 1 and 2 for this color
+    color_stack_level[color] = 2 if level == 1 else 1
+    
+    return level
+
+def reset_stack_levels():
+    """Reset all colors to level 1"""
+    global color_stack_level
+    color_stack_level = {
+        "red": 1,
+        "blue": 1,
+        "green": 1
+    }
+    arduino.write("RESET\n".encode())
+    print("Stack levels reset")
 
 # -------- MAIN LOOP --------
 while True:
     ret, frame = cap.read()
     if not ret: break
 
-    # FIX 2: Resize the frame to reduce processing load drastically
     frame = cv2.resize(frame, (640, 480))
 
-    # FIX 1: Only check the API every 1.5 seconds instead of every frame
+    # Check API every 1.5 seconds
     current_time = time.time()
     if current_time - last_api_check > 1.5:
         pending_orders = get_pending_orders()
@@ -88,7 +116,7 @@ while True:
     in_pick_zone = False
     largest_area = 0
 
-    # 2. Vision Processing
+    # Vision Processing
     for color_name, (lower, upper) in color_ranges.items():
         if color_name == "red2": continue
 
@@ -109,20 +137,24 @@ while True:
                 cx = x + w // 2
                 
                 cv2.rectangle(frame, (x, y), (x+w, y+h), (0,255,0), 2)
-                cv2.putText(frame, color_name, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+                
+                # Display color and its next stack level
+                next_level = color_stack_level[color_name]
+                label = f"{color_name} (L{next_level})"
+                cv2.putText(frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
 
                 if abs(cx - PICK_X_CENTER) <= TOLERANCE:
                     detected_color = color_name
                     in_pick_zone = True
 
-    # 3. Stability Check
+    # Stability Check
     if detected_color == last_detected and in_pick_zone:
         stable_count += 1
     else:
         stable_count = 0
     last_detected = detected_color if in_pick_zone else None
 
-    # 4. Decision Making
+    # Decision Making
     if detected_color is not None and stable_count >= REQUIRED_STABLE and not busy:
         if detected_color in target_colors:
             for order in pending_orders:
@@ -130,15 +162,17 @@ while True:
                     current_target_order = order
                     break
             
-            print(f"Target {detected_color} recognized! Initiating pickup...")
-            send_command("PICK")
+            # Get the stacking level for this color
+            stack_level = get_next_stack_level(detected_color)
             
-            # Force an immediate API update to clear the visual list faster
+            print(f"Target {detected_color} recognized! Stacking at Level {stack_level}")
+            send_command("PICK", stack_level)
+            
             last_api_check = 0 
             
         stable_count = 0 
 
-    # 5. Serial Feedback & Database Update
+    # Serial Feedback & Database Update
     if arduino.in_waiting:
         msg = arduino.readline().decode().strip()
         print(f"Arduino: {msg}")
@@ -148,13 +182,27 @@ while True:
             if current_target_order:
                 complete_order(current_target_order['id'])
                 current_target_order = None
-                last_api_check = 0 # Force API update
+                last_api_check = 0
 
-    # 6. Display
-    cv2.putText(frame, f"DB Targets: {target_colors}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
+    # Display stack levels on screen
+    y_offset = 30
+    cv2.putText(frame, f"DB Targets: {target_colors}", (10, y_offset), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+    y_offset += 30
+    
+    for color, level in color_stack_level.items():
+        level_text = f"{color}: Next->L{level}"
+        cv2.putText(frame, level_text, (10, y_offset), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
+        y_offset += 25
+    
     cv2.imshow("Robot Vision", frame)
 
-    if cv2.waitKey(1) & 0xFF == 27: break
+    key = cv2.waitKey(1) & 0xFF
+    if key == 27:  # ESC to exit
+        break
+    elif key == ord('r'):  # Press 'r' to reset stack levels
+        reset_stack_levels()
 
 cap.release()
 cv2.destroyAllWindows()
