@@ -42,7 +42,7 @@ int dropPos[6]         = {  0,  65, 180, 130,  90, 180 };
 
 // Drop position for object 2 — higher (shoulder up, elbow less bent, wrist adjusted)
 // TUNE THESE VALUES to match how high your stacked object needs to be placed
-int dropPosStacked[6]  = {  0,  50, 155, 110,  90, 180 };
+int dropPosStacked[6]  = {  0,  68, 175, 119,  90, 180 };
 
 // -------- STATE --------
 bool          actionInProgress = false;

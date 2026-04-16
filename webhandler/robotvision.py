@@ -29,7 +29,7 @@ while True:
             break
 print("Handshake complete. Starting camera...")
 
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture("http://172.20.10.2:81/stream")
 
 # -------- COLOR RANGES (HSV) --------
 color_ranges = {
