@@ -1,6 +1,5 @@
 from flask import Flask, render_template, request, jsonify
 import sqlite3
-import os
 
 app = Flask(__name__)
 DB_FILE = "orders.db"
@@ -10,7 +9,6 @@ def init_db():
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
 
-        # Existing orders table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,15 +17,14 @@ def init_db():
             )
         ''')
 
-        # NEW inventory table
+        # Added UNIQUE constraint to color for UPSERT compatibility
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS inventory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                color TEXT NOT NULL,
+                color TEXT UNIQUE NOT NULL,
                 count INTEGER DEFAULT 1
             )
         ''')
-
         conn.commit()
 
 # -------- WEB FRONTEND ROUTE --------
@@ -41,40 +38,37 @@ def add_order():
     data = request.json
     color = data.get('color')
     
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_FILE, timeout=5) as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO orders (color, status) VALUES (?, 'PENDING')", (color,))
         conn.commit()
     return jsonify({"status": "success", "message": f"{color} added to queue."})
 
 # -------- API: GET PENDING ORDERS --------
-# The OpenCV script will call this to know what to look for
 @app.route('/api/get_queue', methods=['GET'])
 def get_queue():
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_FILE, timeout=5) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, color FROM orders WHERE status = 'PENDING'")
         rows = cursor.fetchall()
         
-    # Format as a list of dictionaries for easy parsing
     queue = [{"id": row[0], "color": row[1]} for row in rows]
     return jsonify(queue)
 
 # -------- API: COMPLETE ORDER --------
-# The OpenCV script will call this when the Arduino says "DONE"
 @app.route('/api/complete_order', methods=['POST'])
 def complete_order():
     data = request.json
     order_id = data.get('id')
     
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_FILE, timeout=5) as conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE orders SET status = 'COMPLETED' WHERE id = ?", (order_id,))
         conn.commit()
     return jsonify({"status": "success"})
 
 
-# --------add inventory API--------
+# -------- API: ADD INVENTORY (Optimized UPSERT) --------
 @app.route('/api/add_inventory', methods=['POST'])
 def add_inventory():
     data = request.json
@@ -83,34 +77,22 @@ def add_inventory():
     if not color:
         return jsonify({"status": "error", "message": "No color provided"}), 400
 
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_FILE, timeout=5) as conn:
         cursor = conn.cursor()
-
-        # Check if color already exists
-        cursor.execute("SELECT id, count FROM inventory WHERE color = ?", (color,))
-        row = cursor.fetchone()
-
-        if row:
-            # Increment count
-            cursor.execute(
-                "UPDATE inventory SET count = count + 1 WHERE color = ?",
-                (color,)
-            )
-        else:
-            # Insert new color
-            cursor.execute(
-                "INSERT INTO inventory (color, count) VALUES (?, 1)",
-                (color,)
-            )
-
+        # Single atomic operation to insert or update safely
+        cursor.execute("""
+            INSERT INTO inventory (color, count) 
+            VALUES (?, 1) 
+            ON CONFLICT(color) DO UPDATE SET count = count + 1
+        """, (color,))
         conn.commit()
 
     return jsonify({"status": "success", "message": f"{color} added to inventory"})
 
-# ------view inventory API--------
+# ------ API: VIEW INVENTORY --------
 @app.route('/api/get_inventory', methods=['GET'])
 def get_inventory():
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_FILE, timeout=5) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT color, count FROM inventory")
         rows = cursor.fetchall()
@@ -121,5 +103,4 @@ def get_inventory():
 
 if __name__ == '__main__':
     init_db()
-    # Run the server on port 5000, accessible to your local network
-    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)  
+    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)

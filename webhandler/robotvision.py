@@ -3,14 +3,11 @@ import numpy as np
 import serial
 import time
 import requests
-import threading # <-- Added for non-blocking HTTP requests
+import threading
 
 # -------- CONFIGURATION --------
 API_BASE_URL = "http://localhost:5000/api" 
-PICK_X_CENTER = 320 
-TOLERANCE = 30 
 MIN_AREA = 1500 
-REQUIRED_STABLE = 5 
 
 # -------- STACKING CONFIGURATION --------
 color_stack_level = {
@@ -20,7 +17,6 @@ color_stack_level = {
 }
 
 # -------- SERIAL SETUP & HANDSHAKE --------
-# Reduced timeout from 0.1 to 0.01 to prevent readline() from bottlenecking FPS
 arduino = serial.Serial('COM5', 9600, timeout=0.01)  
 print("Waiting for Arduino to initialize...")
 while True:
@@ -31,6 +27,7 @@ while True:
 print("Handshake complete. Starting camera...")
 
 cap = cv2.VideoCapture("http://172.20.10.2:81/stream")
+
 # -------- COLOR RANGES (HSV) --------
 color_ranges = {
     "red1": ([0, 120, 70], [10, 255, 255]),
@@ -41,20 +38,16 @@ color_ranges = {
 
 # -------- STATE --------
 busy = False
-last_detected = None
-stable_count = 0
 current_target_order = None 
-last_untracked_color = None
-untracked_logged = False
-
-# ---- STATE FOR PERFORMANCE ----
 last_api_check = 0
 pending_orders = []
 target_colors = set()
 
-# -------- THREADED HELPER FUNCTIONS --------
-# Running requests in threads prevents the cv2 window from freezing
+evaluating_block = False
+evaluation_frames_passed = 0
+FRAMES_TO_WAIT = 10 # Let the camera settle for 10 frames before taking a reading
 
+# -------- THREADED HELPER FUNCTIONS --------
 def fetch_orders_thread():
     global pending_orders, target_colors
     try:
@@ -63,7 +56,7 @@ def fetch_orders_thread():
         pending_orders = data
         target_colors = {order['color'] for order in data}
     except Exception as e:
-        pass # If it fails, we just keep the existing pending_orders list
+        pass 
 
 def complete_order_bg(order_id):
     try:
@@ -73,22 +66,16 @@ def complete_order_bg(order_id):
         print(f"Failed to update database: {e}")
 
 def complete_order(order_id):
-    # Fire and forget thread
     threading.Thread(target=complete_order_bg, args=(order_id,), daemon=True).start()
 
 def add_to_inventory_bg(color):
     try:
-        requests.post(
-            f"{API_BASE_URL}/add_inventory",
-            json={"color": color},
-            timeout=1
-        )
+        requests.post(f"{API_BASE_URL}/add_inventory", json={"color": color}, timeout=1)
         print(f"Inventory updated: {color} block added.")
     except Exception as e:
         print(f"Failed to update inventory: {e}")
 
 def add_to_inventory(color):
-    # Fire and forget thread
     threading.Thread(target=add_to_inventory_bg, args=(color,), daemon=True).start()
 
 # -------- HARDWARE HELPER FUNCTIONS --------
@@ -106,11 +93,7 @@ def get_next_stack_level(color):
 
 def reset_stack_levels():
     global color_stack_level
-    color_stack_level = {
-        "red": 1,
-        "blue": 1,
-        "green": 1
-    }
+    color_stack_level = {"red": 1, "blue": 1, "green": 1}
     arduino.write("RESET\n".encode())
     print("Stack levels reset")
 
@@ -118,28 +101,40 @@ def reset_stack_levels():
 while True:
     ret, frame = cap.read()
     if not ret: break
-
     frame = cv2.resize(frame, (640, 480))
 
-    # Check API every 0.5 seconds USING A BACKGROUND THREAD
+    # Check API every 0.5 seconds
     current_time = time.time()
     if current_time - last_api_check > 0.5:
         threading.Thread(target=fetch_orders_thread, daemon=True).start()
         last_api_check = current_time
 
-    # UI Guidelines
-    cv2.line(frame, (PICK_X_CENTER - TOLERANCE, 0), (PICK_X_CENTER - TOLERANCE, frame.shape[0]), (0, 255, 255), 1)
-    cv2.line(frame, (PICK_X_CENTER + TOLERANCE, 0), (PICK_X_CENTER + TOLERANCE, frame.shape[0]), (0, 255, 255), 1)
+    # 1. READ SERIAL FOR TRIGGERS
+    if arduino.in_waiting:
+        try:
+            msg = arduino.readline().decode().strip()
+            if msg:
+                print(f"Arduino: {msg}")
+                if "ACTION: DONE" in msg:
+                    busy = False
+                    if current_target_order:
+                        complete_order(current_target_order['id'])
+                        current_target_order = None
+                elif "STATUS: WAITING" in msg:
+                    evaluating_block = True
+                    evaluation_frames_passed = 0
+                    print("Belt stopped. Evaluating block...")
+        except Exception:
+            pass 
 
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     detected_color = None
-    in_pick_zone = False
     largest_area = 0
+    best_bbox = None
 
-    # Vision Processing
+    # 2. FIND THE LARGEST COLOR BLOB
     for color_name, (lower, upper) in color_ranges.items():
         if color_name == "red2": continue
-
         mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
         if color_name == "red1":
             lower2, upper2 = color_ranges["red2"]
@@ -150,81 +145,47 @@ while True:
         if contours:
             largest_cnt = max(contours, key=cv2.contourArea)
             area = cv2.contourArea(largest_cnt)
-
             if area > MIN_AREA and area > largest_area:
                 largest_area = area
-                x, y, w, h = cv2.boundingRect(largest_cnt)
-                cx = x + w // 2
-                
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (0,255,0), 2)
-                
-                # Display color and its next stack level
-                next_level = color_stack_level[color_name]
-                label = f"{color_name} (L{next_level})"
-                cv2.putText(frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+                detected_color = color_name
+                best_bbox = cv2.boundingRect(largest_cnt)
 
-                if abs(cx - PICK_X_CENTER) <= TOLERANCE:
-                    detected_color = color_name
-                    in_pick_zone = True
+    if best_bbox:
+        x, y, w, h = best_bbox
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (0,255,0), 2)
+        cv2.putText(frame, detected_color, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
 
-    # Stability Check
-    if detected_color == last_detected and in_pick_zone:
-        stable_count += 1
-    else:
-        stable_count = 0
-    
-    if detected_color is None:
-        untracked_logged = False
-        last_untracked_color = None
+    # 3. DECISION LOGIC (Only runs when belt is stopped)
+    if evaluating_block and not busy:
+        evaluation_frames_passed += 1
         
-    last_detected = detected_color if in_pick_zone else None
-
-    # Decision Making
-    if detected_color is not None and stable_count >= REQUIRED_STABLE and not busy:
-
-        if detected_color in target_colors:
-            # -------- EXISTING PICK LOGIC --------
-            for order in pending_orders:
-                if order['color'] == detected_color:
-                    current_target_order = order
-                    break
+        if evaluation_frames_passed > FRAMES_TO_WAIT: 
+            if detected_color:
+                if detected_color in target_colors:
+                    for order in pending_orders:
+                        if order['color'] == detected_color:
+                            current_target_order = order
+                            break
+                    
+                    stack_level = get_next_stack_level(detected_color)
+                    print(f"Target {detected_color} recognized! Stacking at L{stack_level}")
+                    send_command("PICK", stack_level)
+                else:
+                    print(f"Untracked {detected_color} detected. Logging to inventory and skipping.")
+                    add_to_inventory(detected_color)
+                    print("Sending RESUME to Arduino")
+                    arduino.write(b"RESUME\n") 
+            else:
+                print("No valid color detected. Sending RESUME.")
+                arduino.write(b"RESUME\n")
             
-            stack_level = get_next_stack_level(detected_color)
-            
-            print(f"Target {detected_color} recognized! Stacking at Level {stack_level}")
-            send_command("PICK", stack_level)
+            evaluating_block = False
 
-            # Do not force last_api_check = 0 here, let the interval handle it
-            untracked_logged = False  # reset
-
-        else:
-            # -------- NEW INVENTORY LOGIC --------
-            if detected_color != last_untracked_color or not untracked_logged:
-                print(f"Untracked {detected_color} detected → logging to inventory")
-                add_to_inventory(detected_color) # Now threaded!
-                untracked_logged = True
-                last_untracked_color = detected_color
-
-        stable_count = 0
-
-    # Serial Feedback & Database Update
-    if arduino.in_waiting:
-        msg = arduino.readline().decode().strip()
-        if msg: # Only print if not empty
-            print(f"Arduino: {msg}")
-
-        if "ACTION: DONE" in msg:
-            busy = False
-            if current_target_order:
-                complete_order(current_target_order['id']) # Now threaded!
-                current_target_order = None
-
-    # Display stack levels on screen
+    # UI Guidelines
     y_offset = 30
     cv2.putText(frame, f"DB Targets: {list(target_colors)}", (10, y_offset), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
     y_offset += 30
-    
     for color, level in color_stack_level.items():
         level_text = f"{color}: Next->L{level}"
         cv2.putText(frame, level_text, (10, y_offset), 
@@ -234,9 +195,9 @@ while True:
     cv2.imshow("Robot Vision", frame)
 
     key = cv2.waitKey(1) & 0xFF
-    if key == 27:  # ESC to exit
+    if key == 27: 
         break
-    elif key == ord('r'):  # Press 'r' to reset stack levels
+    elif key == ord('r'):
         reset_stack_levels()
 
 cap.release()
