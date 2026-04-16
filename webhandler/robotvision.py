@@ -2,7 +2,8 @@ import cv2
 import numpy as np
 import serial
 import time
-import requests 
+import requests
+import threading # <-- Added for non-blocking HTTP requests
 
 # -------- CONFIGURATION --------
 API_BASE_URL = "http://localhost:5000/api" 
@@ -12,7 +13,6 @@ MIN_AREA = 1500
 REQUIRED_STABLE = 5 
 
 # -------- STACKING CONFIGURATION --------
-# Track what level each color should go to
 color_stack_level = {
     "red": 1,
     "blue": 1,
@@ -20,7 +20,8 @@ color_stack_level = {
 }
 
 # -------- SERIAL SETUP & HANDSHAKE --------
-arduino = serial.Serial('COM6', 9600, timeout=0.1)  
+# Reduced timeout from 0.1 to 0.01 to prevent readline() from bottlenecking FPS
+arduino = serial.Serial('COM5', 9600, timeout=0.01)  
 print("Waiting for Arduino to initialize...")
 while True:
     if arduino.in_waiting:
@@ -29,7 +30,7 @@ while True:
             break
 print("Handshake complete. Starting camera...")
 
-cap = cv2.VideoCapture("http://172.20.10.2:81/stream")
+cap = cv2.VideoCapture(0)
 
 # -------- COLOR RANGES (HSV) --------
 color_ranges = {
@@ -52,49 +53,31 @@ last_api_check = 0
 pending_orders = []
 target_colors = set()
 
-# -------- HELPER FUNCTIONS --------
-def get_pending_orders():
+# -------- THREADED HELPER FUNCTIONS --------
+# Running requests in threads prevents the cv2 window from freezing
+
+def fetch_orders_thread():
+    global pending_orders, target_colors
     try:
         response = requests.get(f"{API_BASE_URL}/get_queue", timeout=3)
-        return response.json() 
-    except:
-        return []
+        data = response.json()
+        pending_orders = data
+        target_colors = {order['color'] for order in data}
+    except Exception as e:
+        pass # If it fails, we just keep the existing pending_orders list
 
-def complete_order(order_id):
+def complete_order_bg(order_id):
     try:
         requests.post(f"{API_BASE_URL}/complete_order", json={"id": order_id}, timeout=1)
         print(f"Database updated: Order {order_id} completed.")
     except Exception as e:
         print(f"Failed to update database: {e}")
 
-def send_command(cmd, level=1):
-    global busy
-    # Send command with stacking level
-    full_cmd = f"{cmd}:{level}"
-    print(f"Sending to Arduino: {full_cmd}")
-    arduino.write((full_cmd + "\n").encode())
-    busy = True
+def complete_order(order_id):
+    # Fire and forget thread
+    threading.Thread(target=complete_order_bg, args=(order_id,), daemon=True).start()
 
-def get_next_stack_level(color):
-    """Determine which level this color should be stacked at"""
-    level = color_stack_level[color]
-    
-    # Toggle between level 1 and 2 for this color
-    color_stack_level[color] = 2 if level == 1 else 1
-    
-    return level
-
-def reset_stack_levels():
-    """Reset all colors to level 1"""
-    global color_stack_level
-    color_stack_level = {
-        "red": 1,
-        "blue": 1,
-        "green": 1
-    }
-    arduino.write("RESET\n".encode())
-    print("Stack levels reset")
-def add_to_inventory(color):
+def add_to_inventory_bg(color):
     try:
         requests.post(
             f"{API_BASE_URL}/add_inventory",
@@ -105,6 +88,32 @@ def add_to_inventory(color):
     except Exception as e:
         print(f"Failed to update inventory: {e}")
 
+def add_to_inventory(color):
+    # Fire and forget thread
+    threading.Thread(target=add_to_inventory_bg, args=(color,), daemon=True).start()
+
+# -------- HARDWARE HELPER FUNCTIONS --------
+def send_command(cmd, level=1):
+    global busy
+    full_cmd = f"{cmd}:{level}"
+    print(f"Sending to Arduino: {full_cmd}")
+    arduino.write((full_cmd + "\n").encode())
+    busy = True
+
+def get_next_stack_level(color):
+    level = color_stack_level[color]
+    color_stack_level[color] = 2 if level == 1 else 1
+    return level
+
+def reset_stack_levels():
+    global color_stack_level
+    color_stack_level = {
+        "red": 1,
+        "blue": 1,
+        "green": 1
+    }
+    arduino.write("RESET\n".encode())
+    print("Stack levels reset")
 
 # -------- MAIN LOOP --------
 while True:
@@ -113,11 +122,10 @@ while True:
 
     frame = cv2.resize(frame, (640, 480))
 
-    # Check API every 1.5 seconds
+    # Check API every 0.5 seconds USING A BACKGROUND THREAD
     current_time = time.time()
     if current_time - last_api_check > 0.5:
-        pending_orders = get_pending_orders()
-        target_colors = {order['color'] for order in pending_orders}
+        threading.Thread(target=fetch_orders_thread, daemon=True).start()
         last_api_check = current_time
 
     # UI Guidelines
@@ -165,9 +173,11 @@ while True:
         stable_count += 1
     else:
         stable_count = 0
+    
     if detected_color is None:
         untracked_logged = False
         last_untracked_color = None
+        
     last_detected = detected_color if in_pick_zone else None
 
     # Decision Making
@@ -185,14 +195,14 @@ while True:
             print(f"Target {detected_color} recognized! Stacking at Level {stack_level}")
             send_command("PICK", stack_level)
 
-            last_api_check = 0
+            # Do not force last_api_check = 0 here, let the interval handle it
             untracked_logged = False  # reset
 
         else:
             # -------- NEW INVENTORY LOGIC --------
             if detected_color != last_untracked_color or not untracked_logged:
                 print(f"Untracked {detected_color} detected → logging to inventory")
-                add_to_inventory(detected_color)
+                add_to_inventory(detected_color) # Now threaded!
                 untracked_logged = True
                 last_untracked_color = detected_color
 
@@ -201,18 +211,18 @@ while True:
     # Serial Feedback & Database Update
     if arduino.in_waiting:
         msg = arduino.readline().decode().strip()
-        print(f"Arduino: {msg}")
+        if msg: # Only print if not empty
+            print(f"Arduino: {msg}")
 
         if "ACTION: DONE" in msg:
             busy = False
             if current_target_order:
-                complete_order(current_target_order['id'])
+                complete_order(current_target_order['id']) # Now threaded!
                 current_target_order = None
-                last_api_check = 0
 
     # Display stack levels on screen
     y_offset = 30
-    cv2.putText(frame, f"DB Targets: {target_colors}", (10, y_offset), 
+    cv2.putText(frame, f"DB Targets: {list(target_colors)}", (10, y_offset), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
     y_offset += 30
     
